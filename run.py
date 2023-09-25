@@ -117,7 +117,7 @@ class DataLoader():
         image_info['file_name'] = image_path.name
 
         # Image shape information
-        image = Image.open(image_path)
+        image = self.get_image(image_path)
         image_info['height'] = image.height
         image_info['width'] = image.width
 
@@ -143,6 +143,16 @@ class DataLoader():
 
         return annotation_infos
 
+
+    def get_image(self, image_path: Path) -> Image:
+        if image_path.suffix == '.npy':
+            image = np.load(image_path)
+            image = Image.fromarray(image)
+        else:
+            image = Image.open(image_path)
+        
+        return image
+    
 
     def get_segmentation_mask(self, mask_path: Path) -> np.ndarray:
         """Get segmentation mask from mask file
