@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import List, Tuple, TypedDict
 import numpy as np
 from pycocotools import mask as mask_utils
+from skimage import measure
 from PIL import Image
 import json
 
@@ -13,8 +14,13 @@ class ImageInfo(TypedDict):
     width: int
 
 
+class RLEInfo(TypedDict):
+    counts: str
+    size: List[int]
+
+
 class AnnotationInfo(TypedDict):
-    segmentation: List[List[float]]
+    segmentation: RLEInfo
     area: float
     iscrowd: int
     image_id: int
@@ -45,7 +51,7 @@ class DataLoader():
         self.image_name_to_id = {}
 
 
-    def make_coco_format(self, image_mask_pairs: List[Tuple[Path, Path]], output_path: Path) -> None:
+    def make_coco_format(self, output_path: Path) -> None:
         """Make coco format json file
 
         Args:
@@ -80,7 +86,7 @@ class DataLoader():
         
 
         dataset = {
-            'type': 'segmentation',
+            'type': 'segmentations',
             'info': info,
             'categories': categories_list,
             'images': images_list,
@@ -88,12 +94,20 @@ class DataLoader():
         }
 
         with open(output_path, 'w') as f:
-            json.dump(dataset, f)
+            json.dump(dataset, f, indent=4)
 
 
     def make_coco_format_images_and_masks(self, image_mask_pairs: List[Tuple[Path, Path]]) -> Tuple[List[ImageInfo], List[AnnotationInfo]]:
-        images_list = List[ImageInfo]()
-        annotations_list = List[AnnotationInfo]()
+        """Create a list of image and mask information in COCO format
+
+        Args:
+            image_mask_pairs (List[Tuple[Path, Path]]): a list of a pair of image path and its corresponding mask path
+
+        Returns:
+            Tuple[List[ImageInfo], List[AnnotationInfo]]: List of image information and list of mask information
+        """
+        images_list: List[ImageInfo] = []
+        annotations_list: List[AnnotationInfo] = []
         for image_path, mask_path in image_mask_pairs:
             image_info = self.process_image(image_path)
             annotation_infos = self.process_mask(mask_path)
@@ -105,7 +119,17 @@ class DataLoader():
 
 
     def process_image(self, image_path: Path) -> ImageInfo:
-        image_info = ImageInfo()
+        """Process image file and return image information in COCO format
+        
+        If the file is a numpy array, it will be converted to a jpg file for fiftyone to read
+
+        Args:
+            image_path (Path): Path to the image file
+
+        Returns:
+            ImageInfo: Image information in COCO format
+        """
+        image_info: ImageInfo = {}
 
         # Check if the image file name is already in the dictionary
         if image_path.stem not in self.image_name_to_id:
@@ -114,7 +138,10 @@ class DataLoader():
         image_info['id'] = image_id
 
         # Image file name
-        image_info['file_name'] = image_path.name
+        if image_path.suffix == '.npy':
+            image_info['file_name'] = image_path.with_suffix('.jpg').name
+        else:
+            image_info['file_name'] = image_path.name
 
         # Image shape information
         image = self.get_image(image_path)
@@ -125,7 +152,17 @@ class DataLoader():
     
 
     def process_mask(self, mask_path: Path) -> List[AnnotationInfo]:
-        annotation_infos = List[AnnotationInfo]()
+        """Process mask file and return mask information in COCO format
+
+        The mask segmentation is in RLE format which is done by pycocotools more information can be found here: https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocotools/mask.py
+
+        Args:
+            mask_path (Path): Path to the mask file
+
+        Returns:
+            List[AnnotationInfo]: Mask information in COCO format
+        """
+        annotation_infos: List[AnnotationInfo] = []
 
         mask = self.get_segmentation_mask(mask_path)
         categories = np.unique(mask)
@@ -133,21 +170,38 @@ class DataLoader():
             annotation_info = AnnotationInfo()
             if category_id == 0:
                 continue
-            annotation_info['category_id'] = category_id
+            annotation_info['category_id'] = int(category_id)
+            
             encoded_mask = mask_utils.encode(np.asfortranarray((mask == category_id).astype(np.uint8)))
-            annotation_info['segmentation'] = list(encoded_mask['counts'])
-            annotation_info['area'] = mask_utils.area(encoded_mask)
+            annotation_info["segmentation"] = {'counts': encoded_mask['counts'].decode(), 'size': encoded_mask['size']}
+            
+            annotation_info['area'] = float(mask_utils.area(encoded_mask))
             annotation_info['bbox'] = mask_utils.toBbox(encoded_mask).tolist()
             annotation_info['iscrowd'] = 0
+            annotation_info['image_id'] = self.image_name_to_id[mask_path.stem]
             annotation_infos.append(annotation_info)
 
         return annotation_infos
 
 
     def get_image(self, image_path: Path) -> Image:
+        """Load image from file
+
+        If the file is a numpy array, it will be converted to a jpg file for fiftyone to read
+
+        Args:
+            image_path (Path): Path to the image file
+
+        Returns:
+            Image: PIL Image object
+        """
         if image_path.suffix == '.npy':
             image = np.load(image_path)
+            # Convert image from (C, H, W) to (H, W, C)
+            image = np.moveaxis(image, 0, -1)
             image = Image.fromarray(image)
+            image = image.convert('RGB')
+            image.save(image_path.with_suffix('.jpg'))
         else:
             image = Image.open(image_path)
         
@@ -222,4 +276,5 @@ class DataLoader():
 
 
 if __name__ == '__main__':
-    print('Run as main')
+    dataloader = DataLoader(image_types=set(['.npy']), mask_types=set(['.npy']))
+    dataloader.make_coco_format(Path('./dataset/annotations/solar_panel_segmentation.json'))
