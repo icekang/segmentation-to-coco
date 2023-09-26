@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import List, Tuple, TypedDict
 import numpy as np
 from pycocotools import mask as mask_utils
-from skimage import measure
 from PIL import Image
 import json
 
