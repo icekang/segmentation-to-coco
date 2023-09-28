@@ -3,6 +3,7 @@ from typing import List, Tuple, TypedDict
 import numpy as np
 from pycocotools import mask as mask_utils
 from PIL import Image
+import cv2
 import json
 
 
@@ -19,6 +20,7 @@ class RLEInfo(TypedDict):
 
 
 class AnnotationInfo(TypedDict):
+    id: int
     segmentation: RLEInfo
     area: float
     iscrowd: int
@@ -48,6 +50,8 @@ class DataLoader():
         self.image_types = image_types
         self.mask_types = mask_types
         self.image_name_to_id = {}
+
+        self.annotation_counter = 0
 
 
     def make_coco_format(self, output_path: Path) -> None:
@@ -111,6 +115,7 @@ class DataLoader():
             image_info = self.process_image(image_path)
             annotation_infos = self.process_mask(mask_path)
 
+            image_info['sem_seg_file_name'] = str( Path('..') / mask_path.parent.name / mask_path.with_suffix('.bmp').name )
             images_list.append(image_info)
             annotations_list.extend(annotation_infos)
 
@@ -150,6 +155,16 @@ class DataLoader():
         return image_info
     
 
+    def get_next_annotation_id(self) -> int:
+        """Get the next annotation id
+
+        Returns:
+            int: next annotation id
+        """
+        self.annotation_counter += 1
+
+        return self.annotation_counter
+
     def process_mask(self, mask_path: Path) -> List[AnnotationInfo]:
         """Process mask file and return mask information in COCO format
 
@@ -164,12 +179,15 @@ class DataLoader():
         annotation_infos: List[AnnotationInfo] = []
 
         mask = self.get_segmentation_mask(mask_path)
+        
         categories = np.unique(mask)
         for category_id in categories:
             annotation_info = AnnotationInfo()
             if category_id == 0:
                 continue
             annotation_info['category_id'] = int(category_id)
+
+            annotation_info['id'] = self.get_next_annotation_id()
             
             encoded_mask = mask_utils.encode(np.asfortranarray((mask == category_id).astype(np.uint8)))
             annotation_info["segmentation"] = {'counts': encoded_mask['counts'].decode(), 'size': encoded_mask['size']}
@@ -220,6 +238,16 @@ class DataLoader():
         # Check if the mask file is a numpy array
         if mask_path.suffix == '.npy':
             segmentation_mask = np.load(mask_path)
+            segmentation_mask = segmentation_mask.astype(np.uint8)
+            if segmentation_mask.max() > 1:
+                raise ValueError(f'[1] Warning: mask file contains values greater than 1 {mask_path}')
+            # image = Image.fromarray(segmentation_mask.astype(np.uint8))
+            # image = image.convert('L')
+            cv2.imwrite(str(mask_path.with_suffix('.bmp')), segmentation_mask)
+            image = Image.open(mask_path.with_suffix('.bmp'))
+            if np.array(image).max() > 1:
+                if cv2.imread(str(mask_path.with_suffix('.bmp'))).max() > 1:
+                    raise ValueError(f'[2] Warning: mask file contains values greater than 1 {mask_path.with_suffix(".bmp")}')
         else:
             # If the mask file is not a numpy array, load it as an image
             # and convert it to a numpy array
